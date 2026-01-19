@@ -1,0 +1,10 @@
+{
+    "tables": {
+        "todos": {
+            "access": ["create", "read", "update", "delete"],
+            "filters": {
+                "user_id": "$user.id"
+            }
+        }
+    }
+}

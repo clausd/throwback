@@ -1,0 +1,481 @@
+# CrudApp - Perl JSON API Framework
+
+> CrudApp is a minimal Perl framework for building JSON REST APIs with authentication and per-user access control. It's designed for shared hosting environments with minimal dependencies.
+
+## Quick Start
+
+To build a Vue.js app with a CrudApp backend:
+
+1. Create your API module (MyApi.pm)
+2. Set up the database schema
+3. Create users with access rules
+4. Build your Vue frontend using the JavaScript client
+
+## Architecture
+
+```
+Frontend (Vue.js)  <-->  CrudApp API (Perl CGI)  <-->  MySQL Database
+     |                         |
+     |                         |
+crud-client.js            MyApi.pm extends CrudApp.pm
+```
+
+## Backend Setup
+
+### 1. Database Schema
+
+CrudApp requires two system tables for authentication:
+
+```sql
+CREATE TABLE _auth (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    password_salt VARCHAR(32) NOT NULL,
+    password_hash VARCHAR(64) NOT NULL,
+    access_rules TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE _sessions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(64) UNIQUE NOT NULL,
+    user_id INT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE
+);
+```
+
+Add your application tables as needed:
+
+```sql
+CREATE TABLE todos (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    done TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE
+);
+```
+
+### 2. API Module (MyApi.pm)
+
+```perl
+package MyApi;
+use strict;
+use warnings;
+use base 'CrudApp';
+
+sub configure {
+    my $app = shift;
+    $app->set_db('database_name', 'username', 'password');
+}
+
+# Expose tables via CRUD endpoints
+sub todos { shift->crud('todos') }
+sub posts { shift->crud('posts') }
+
+# Optional: Allow anonymous access to certain tables
+sub anon_access {
+    return {
+        posts => ['read']  # Anyone can read posts
+    };
+}
+
+# Custom endpoint example
+sub dashboard {
+    my $app = shift;
+    my $user = $app->current_user;
+    return $app->render_error("Unauthorized", 401) unless $user;
+
+    $app->render_json({
+        total => $app->query_value(
+            "SELECT COUNT(*) FROM todos WHERE user_id = ?",
+            $user->{id}
+        ),
+        completed => $app->query_value(
+            "SELECT COUNT(*) FROM todos WHERE user_id = ? AND done = 1",
+            $user->{id}
+        )
+    });
+}
+
+1;
+```
+
+### 3. CGI Entry Point (api.cgi)
+
+```perl
+#!/usr/bin/perl
+use strict;
+use warnings;
+use lib '.', '..';
+use MyApi;
+
+MyApi->new->run;
+```
+
+### 4. Apache .htaccess
+
+```apache
+RewriteEngine On
+
+# CRITICAL: Pass Authorization header to CGI
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+RewriteBase /
+
+# Serve static files directly
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Route API requests to CGI
+RewriteRule ^(.*)$ api.cgi/$1 [L,QSA]
+```
+
+### 5. User Access Rules
+
+Users are created with access_rules JSON that defines what they can do:
+
+```json
+{
+  "tables": {
+    "todos": {
+      "access": ["create", "read", "update", "delete"],
+      "filters": {"user_id": "$user.id"}
+    }
+  }
+}
+```
+
+The filter `{"user_id": "$user.id"}` ensures users only see their own records.
+
+Create users with the create_user.pl script:
+
+```bash
+perl create_user.pl username password
+```
+
+## Frontend Setup (Vue.js)
+
+### JavaScript Client (crud-client.js)
+
+Include the CrudClient class in your app:
+
+```javascript
+class CrudClient {
+    constructor(baseUrl, options = {}) {
+        this.baseUrl = baseUrl.replace(/\/$/, '');
+        this.token = options.token || localStorage.getItem('crud_token');
+    }
+
+    setToken(token) {
+        this.token = token;
+        if (token) {
+            localStorage.setItem('crud_token', token);
+        } else {
+            localStorage.removeItem('crud_token');
+        }
+    }
+
+    async request(method, path, data = null) {
+        const url = `${this.baseUrl}/${path}`;
+        const options = {
+            method,
+            headers: { 'Content-Type': 'application/json' }
+        };
+
+        if (this.token) {
+            options.headers['Authorization'] = `Bearer ${this.token}`;
+        }
+
+        if (data && method !== 'GET') {
+            options.body = JSON.stringify(data);
+        }
+
+        const response = await fetch(url, options);
+        const json = await response.json();
+
+        if (!response.ok) {
+            const error = new Error(json.error || `HTTP ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+
+        return json;
+    }
+
+    async login(username, password) {
+        const result = await this.request('POST', 'login', { username, password });
+        this.setToken(result.token);
+        return result;
+    }
+
+    async logout() {
+        try { await this.request('POST', 'logout'); } catch (e) {}
+        this.setToken(null);
+    }
+
+    isLoggedIn() {
+        return !!this.token;
+    }
+
+    table(name) {
+        const client = this;
+        return {
+            list: (params = {}) => {
+                const query = new URLSearchParams(params).toString();
+                return client.request('GET', query ? `${name}?${query}` : name);
+            },
+            get: (id) => client.request('GET', `${name}/${id}`),
+            create: (data) => client.request('POST', name, data),
+            update: (id, data) => client.request('POST', name, { id, ...data }),
+            delete: (id) => client.request('DELETE', `${name}/${id}`)
+        };
+    }
+}
+```
+
+### Vue.js App Example
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Todo App</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- Login Form -->
+        <div v-if="!token">
+            <h1>Login</h1>
+            <form @submit.prevent="login">
+                <input v-model="username" placeholder="Username" required>
+                <input v-model="password" type="password" placeholder="Password" required>
+                <button type="submit">Login</button>
+            </form>
+            <p v-if="error">{{ error }}</p>
+        </div>
+
+        <!-- Todo List -->
+        <div v-else>
+            <h1>My Todos</h1>
+            <button @click="logout">Logout</button>
+
+            <form @submit.prevent="addTodo">
+                <input v-model="newTitle" placeholder="New todo" required>
+                <button type="submit">Add</button>
+            </form>
+
+            <ul>
+                <li v-for="todo in todos" :key="todo.id">
+                    <input type="checkbox" :checked="todo.done" @change="toggleTodo(todo)">
+                    <span :style="{ textDecoration: todo.done ? 'line-through' : 'none' }">
+                        {{ todo.title }}
+                    </span>
+                    <button @click="deleteTodo(todo)">Delete</button>
+                </li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="js/crud-client.js"></script>
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                const api = new CrudClient('.');
+                const token = ref(localStorage.getItem('crud_token') || '');
+                const username = ref('');
+                const password = ref('');
+                const todos = ref([]);
+                const newTitle = ref('');
+                const error = ref('');
+
+                if (token.value) api.setToken(token.value);
+
+                async function login() {
+                    try {
+                        await api.login(username.value, password.value);
+                        token.value = api.token;
+                        await loadTodos();
+                    } catch (e) {
+                        error.value = e.message;
+                    }
+                }
+
+                function logout() {
+                    api.logout();
+                    token.value = '';
+                    todos.value = [];
+                }
+
+                async function loadTodos() {
+                    const result = await api.table('todos').list();
+                    todos.value = result.data || [];
+                }
+
+                async function addTodo() {
+                    const todo = await api.table('todos').create({ title: newTitle.value });
+                    todos.value.push(todo);
+                    newTitle.value = '';
+                }
+
+                async function toggleTodo(todo) {
+                    const updated = await api.table('todos').update(todo.id, {
+                        done: todo.done ? 0 : 1
+                    });
+                    const idx = todos.value.findIndex(t => t.id === todo.id);
+                    if (idx >= 0) todos.value[idx] = updated;
+                }
+
+                async function deleteTodo(todo) {
+                    await api.table('todos').delete(todo.id);
+                    todos.value = todos.value.filter(t => t.id !== todo.id);
+                }
+
+                onMounted(() => {
+                    if (token.value) loadTodos();
+                });
+
+                return {
+                    token, username, password, todos, newTitle, error,
+                    login, logout, addTodo, toggleTodo, deleteTodo
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
+```
+
+## API Reference
+
+### Authentication Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /login | Login with `{username, password}`, returns `{token, expires}` |
+| POST | /logout | Invalidate current token |
+
+### CRUD Endpoints
+
+For each table exposed via `sub tablename { shift->crud('tablename') }`:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /tablename | List records (with user's filters applied) |
+| GET | /tablename/:id | Get single record |
+| POST | /tablename | Create record (body without id) or update (body with id) |
+| DELETE | /tablename/:id | Delete record |
+
+### Response Format
+
+Success responses:
+```json
+// List
+{"data": [...], "limit": 20, "offset": 0}
+
+// Single record
+{"id": 1, "title": "...", ...}
+
+// Delete
+{"deleted": 1}
+```
+
+Error responses:
+```json
+{"error": "Error message"}
+```
+
+## Custom Queries
+
+For joins, aggregations, or complex queries:
+
+```perl
+# Single row
+my $row = $app->query_row("SELECT * FROM users WHERE id = ?", $id);
+
+# Multiple rows
+my $rows = $app->query_rows(
+    "SELECT t.*, u.username FROM todos t JOIN _auth u ON u.id = t.user_id"
+);
+
+# Single value
+my $count = $app->query_value("SELECT COUNT(*) FROM todos WHERE user_id = ?", $uid);
+
+# Execute non-SELECT
+$app->query_do("UPDATE todos SET done = 1 WHERE id = ?", $id);
+```
+
+## Dependencies
+
+**Required (all standard or widely available):**
+- Perl 5.10+
+- CGI (core)
+- DBI
+- DBD::mysql
+- JSON
+- Digest::SHA (core since 5.10)
+
+## File Structure
+
+```
+/your-app/
+├── CrudApp.pm          # Framework (copy from crudapp-standalone)
+├── MyApi.pm            # Your API module
+├── api.cgi             # CGI entry point
+├── .htaccess           # Apache routing
+├── index.html          # Vue.js frontend
+├── js/
+│   └── crud-client.js  # JavaScript API client
+├── schema.sql          # Database schema
+└── create_user.pl      # User creation script
+```
+
+## Common Patterns
+
+### Protected endpoint requiring authentication
+
+```perl
+sub my_endpoint {
+    my $app = shift;
+    my $user = $app->current_user;
+    return $app->render_error("Unauthorized", 401) unless $user;
+
+    # ... do work ...
+    $app->render_json({ result => 'ok' });
+}
+```
+
+### Custom endpoint with parameters
+
+```perl
+sub search {
+    my $app = shift;
+    my $q = $app->param('q') or return $app->render_error("Query required", 400);
+
+    my $results = $app->query_rows(
+        "SELECT id, title FROM posts WHERE title LIKE ? LIMIT 20",
+        "%$q%"
+    );
+    $app->render_json({ data => $results });
+}
+```
+
+### Accessing from Vue
+
+```javascript
+// Custom endpoint
+const stats = await api.request('GET', 'dashboard');
+const results = await api.request('GET', 'search?q=hello');
+
+// With POST data
+const result = await api.request('POST', 'custom-action', { foo: 'bar' });
+```

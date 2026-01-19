@@ -1,0 +1,7 @@
+{
+    "tables": {
+        "*": {
+            "access": ["create", "read", "update", "delete"]
+        }
+    }
+}

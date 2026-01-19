@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Todo App - CrudApp Demo</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { margin: 0 0 20px; color: #333; }
+        input, button {
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        input { width: 100%; margin-bottom: 10px; }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover { background: #45a049; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        button.secondary { background: #666; }
+        button.danger { background: #e74c3c; }
+        .error { color: #e74c3c; margin: 10px 0; }
+        .todo-list { list-style: none; padding: 0; }
+        .todo-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        .todo-item:last-child { border-bottom: none; }
+        .todo-item.done .todo-title { text-decoration: line-through; color: #999; }
+        .todo-checkbox {
+            width: 24px;
+            height: 24px;
+            margin-right: 15px;
+            cursor: pointer;
+        }
+        .todo-title { flex: 1; font-size: 16px; }
+        .todo-delete {
+            background: none;
+            border: none;
+            color: #e74c3c;
+            cursor: pointer;
+            padding: 5px 10px;
+        }
+        .add-form { display: flex; gap: 10px; }
+        .add-form input { flex: 1; margin: 0; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Login Form -->
+        <div class="card" v-if="!token">
+            <h1>Login</h1>
+            <form @submit.prevent="login">
+                <input v-model="username" placeholder="Username" required>
+                <input v-model="password" type="password" placeholder="Password" required>
+                <button type="submit" :disabled="loading">
+                    {{ loading ? 'Logging in...' : 'Login' }}
+                </button>
+            </form>
+            <p class="error" v-if="error">{{ error }}</p>
+        </div>
+
+        <!-- Todo App -->
+        <div v-else>
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h1>My Todos</h1>
+                    <button class="secondary" @click="logout">Logout</button>
+                </div>
+
+                <form class="add-form" @submit.prevent="addTodo">
+                    <input v-model="newTitle" placeholder="What needs to be done?" required>
+                    <button type="submit" :disabled="loading">Add</button>
+                </form>
+            </div>
+
+            <div class="card" v-if="todos.length > 0">
+                <ul class="todo-list">
+                    <li v-for="todo in todos" :key="todo.id"
+                        class="todo-item" :class="{ done: todo.done }">
+                        <input type="checkbox" class="todo-checkbox"
+                               :checked="todo.done" @change="toggleTodo(todo)">
+                        <span class="todo-title">{{ todo.title }}</span>
+                        <button class="todo-delete" @click="deleteTodo(todo)">×</button>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="card" v-else>
+                <p style="text-align: center; color: #999;">No todos yet. Add one above!</p>
+            </div>
+
+            <p class="error" v-if="error">{{ error }}</p>
+        </div>
+    </div>
+
+    <script src="js/crud-client.js"></script>
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                // State
+                const token = ref(localStorage.getItem('crud_token') || '');
+                const username = ref('');
+                const password = ref('');
+                const todos = ref([]);
+                const newTitle = ref('');
+                const loading = ref(false);
+                const error = ref('');
+
+                // API client - adjust URL if needed
+                const api = new CrudClient('.');
+
+                // Restore token on load
+                if (token.value) {
+                    api.setToken(token.value);
+                }
+
+                // Methods
+                async function login() {
+                    loading.value = true;
+                    error.value = '';
+                    try {
+                        const result = await api.login(username.value, password.value);
+                        token.value = result.token;
+                        await loadTodos();
+                    } catch (e) {
+                        error.value = e.error || 'Login failed';
+                    }
+                    loading.value = false;
+                }
+
+                function logout() {
+                    api.logout();
+                    token.value = '';
+                    todos.value = [];
+                    username.value = '';
+                    password.value = '';
+                }
+
+                async function loadTodos() {
+                    loading.value = true;
+                    error.value = '';
+                    try {
+                        const result = await api.table('todos').list();
+                        todos.value = result.data || [];
+                    } catch (e) {
+                        error.value = e.error || 'Failed to load todos';
+                    }
+                    loading.value = false;
+                }
+
+                async function addTodo() {
+                    if (!newTitle.value.trim()) return;
+                    loading.value = true;
+                    error.value = '';
+                    try {
+                        const todo = await api.table('todos').create({
+                            title: newTitle.value.trim()
+                        });
+                        todos.value.push(todo);
+                        newTitle.value = '';
+                    } catch (e) {
+                        error.value = e.error || 'Failed to add todo';
+                    }
+                    loading.value = false;
+                }
+
+                async function toggleTodo(todo) {
+                    try {
+                        const updated = await api.table('todos').update(todo.id, {
+                            done: todo.done ? 0 : 1
+                        });
+                        const idx = todos.value.findIndex(t => t.id === todo.id);
+                        if (idx >= 0) todos.value[idx] = updated;
+                    } catch (e) {
+                        error.value = e.error || 'Failed to update todo';
+                    }
+                }
+
+                async function deleteTodo(todo) {
+                    try {
+                        await api.table('todos').delete(todo.id);
+                        todos.value = todos.value.filter(t => t.id !== todo.id);
+                    } catch (e) {
+                        error.value = e.error || 'Failed to delete todo';
+                    }
+                }
+
+                // Load todos on mount if logged in
+                onMounted(() => {
+                    if (token.value) {
+                        loadTodos();
+                    }
+                });
+
+                return {
+                    token, username, password, todos, newTitle, loading, error,
+                    login, logout, addTodo, toggleTodo, deleteTodo
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+# CrudApp - Static Frontend + JSON API Configuration
+#
+# DEPLOYMENT MODEL:
+# Static files (HTML, CSS, JS) are served directly by Apache.
+# All other requests are routed to api.cgi as JSON API calls.
+#
+# Example:
+#   GET /index.html     -> Serves static file (fast, no CGI)
+#   GET /todos          -> Routes to api.cgi/todos (JSON API)
+#   POST /login         -> Routes to api.cgi/login (JSON API)
+
+RewriteEngine On
+
+# ─────────────────────────────────────────────────────────────
+# CRITICAL: Pass Authorization header to CGI
+# Apache strips this by default, breaking Bearer token auth
+# ─────────────────────────────────────────────────────────────
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# IMPORTANT: Set this to match your URL path
+# Examples:
+#   App at https://example.com/todo/   -> RewriteBase /todo/
+#   App at https://example.com/        -> RewriteBase /
+RewriteBase /
+
+# ─────────────────────────────────────────────────────────────
+# Rule 1: Serve static files directly
+# If the requested path is an existing file or directory,
+# serve it as-is (no CGI, fast static serving)
+# ─────────────────────────────────────────────────────────────
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# ─────────────────────────────────────────────────────────────
+# Rule 2: Route everything else to the API
+# Non-file requests become API calls:
+#   /login      -> api.cgi/login
+#   /todos      -> api.cgi/todos
+#   /todos/5    -> api.cgi/todos/5
+# ─────────────────────────────────────────────────────────────
+RewriteRule ^(.*)$ api.cgi/$1 [L,QSA]
+
+# ─────────────────────────────────────────────────────────────
+# Security: Block direct access to Perl files and JSON configs
+# ─────────────────────────────────────────────────────────────
+<FilesMatch "\.(pm|pl|json)$">
+    Require all denied
+</FilesMatch>
+
+# Allow CGI execution
+<FilesMatch "\.cgi$">
+    Require all granted
+</FilesMatch>
+
+# Set charset for all responses
+AddDefaultCharset UTF-8
+
+# Optional: Compress JSON responses
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE application/json
+</IfModule>
