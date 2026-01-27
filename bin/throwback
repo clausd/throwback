@@ -146,6 +146,13 @@ END
             or warn "Warning: Could not copy crud-client.js: $!\n";
     }
 
+    # Copy llms.txt for AI agent context
+    my $llms_src = "$framework/llms.txt";
+    if (-f $llms_src) {
+        copy($llms_src, "$dir/llms.txt")
+            or warn "Warning: Could not copy llms.txt: $!\n";
+    }
+
     # Write MySQL schema
     _write_file("$dir/schema.sql", <<'END');
 -- CrudApp MySQL Schema
