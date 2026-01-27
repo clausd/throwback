@@ -9,6 +9,9 @@ use CGI;
 use DBI;
 use JSON;
 use Digest::SHA qw(sha256_hex);
+use HTTP::Tiny;
+
+my %_proxy_config;  # class -> { name -> { url, key, headers } }
 
 #############################################################################
 # Constructor and Setup
@@ -53,6 +56,28 @@ sub set_db {
         $user, $pass,
         { RaiseError => 1, PrintError => 0, mysql_enable_utf8 => 1 }
     );
+}
+
+# Connect using a database adapter (for SQLite support, etc.)
+# Usage: $app->set_db_adapter($adapter) where $adapter is a CrudApp::DB::* instance
+sub set_db_adapter {
+    my ($app, $adapter) = @_;
+    $app->{_db_adapter} = $adapter;
+    $app->{_dbh} = $adapter->connect();
+}
+
+# Get the current database adapter (returns undef if using set_db directly)
+sub db_adapter { shift->{_db_adapter} }
+
+# SQL expression helpers - use adapter if available, otherwise MySQL defaults
+sub _sql_now {
+    my $app = shift;
+    return $app->{_db_adapter} ? $app->{_db_adapter}->now_expr() : 'NOW()';
+}
+
+sub _sql_from_unixtime {
+    my $app = shift;
+    return $app->{_db_adapter} ? $app->{_db_adapter}->from_unixtime() : 'FROM_UNIXTIME(?)';
 }
 
 #############################################################################
@@ -229,8 +254,9 @@ sub login {
     my $token = $app->generate_token;
     my $expires = time() + (86400 * 7);  # 7 days
 
+    my $from_unixtime = $app->_sql_from_unixtime();
     $app->dbh->do(
-        "INSERT INTO _sessions (token, user_id, expires_at) VALUES (?, ?, FROM_UNIXTIME(?))",
+        "INSERT INTO _sessions (token, user_id, expires_at) VALUES (?, ?, $from_unixtime)",
         undef, $token, $user->{id}, $expires
     );
 
@@ -262,10 +288,11 @@ sub current_user {
     my $token = $app->_get_bearer_token;
     return $app->{_current_user} = undef unless $token;
 
+    my $now = $app->_sql_now();
     my $row = $app->dbh->selectrow_hashref(
         "SELECT u.* FROM _auth u
          JOIN _sessions s ON s.user_id = u.id
-         WHERE s.token = ? AND s.expires_at > NOW()",
+         WHERE s.token = ? AND s.expires_at > $now",
         undef, $token
     );
 
@@ -594,6 +621,120 @@ sub create_user {
     );
 
     return $app->dbh->last_insert_id(undef, undef, '_auth', undef);
+}
+
+#############################################################################
+# API Proxy
+#############################################################################
+
+sub add_proxy {
+    my ($class_or_self, $name, $upstream_url, $api_key, $opts) = @_;
+    my $class = ref($class_or_self) || $class_or_self;
+
+    $upstream_url =~ s|/+$||;
+
+    $_proxy_config{$class}{$name} = {
+        url     => $upstream_url,
+        key     => $api_key || '',
+        headers => $opts->{headers} || {},
+    };
+}
+
+sub proxy {
+    my ($app, $name) = @_;
+
+    my $user = $app->current_user;
+    return $app->render_error("Unauthorized", 401) unless $user;
+
+    my $class  = ref($app);
+    my $config = $_proxy_config{$class}{$name};
+    return $app->render_error("Proxy not configured: $name", 500) unless $config;
+
+    # Build upstream URL
+    my $path     = $app->path_id || '';
+    my $upstream = $config->{url} . '/' . $path;
+    my $qs       = $ENV{QUERY_STRING} || '';
+    $upstream   .= '?' . $qs if $qs;
+
+    # Read raw request body
+    my $body = $app->_raw_body;
+
+    # Build headers
+    my %headers;
+    $headers{'Content-Type'} = $ENV{CONTENT_TYPE} if $ENV{CONTENT_TYPE};
+
+    for my $h (keys %{$config->{headers}}) {
+        my $val = $config->{headers}{$h};
+        $val =~ s/\$KEY/$config->{key}/g;
+        $headers{$h} = $val;
+    }
+
+    # Default to Bearer auth if no auth header configured
+    unless (grep { lc($_) eq 'authorization' || lc($_) eq 'x-api-key' }
+            keys %{$config->{headers}}) {
+        $headers{'Authorization'} = 'Bearer ' . $config->{key};
+    }
+
+    my $method = $app->request_method;
+
+    my %req = (headers => \%headers);
+    $req{content} = $body if defined $body && length($body);
+
+    # Store prepared request. DevServer executes it after restoring
+    # real STDOUT (HTTP::Tiny socket ops corrupt string-backed fds).
+    # In production CGI, execute immediately since STDOUT is real.
+    $app->{_proxy_request} = {
+        method  => $method,
+        url     => $upstream,
+        options => \%req,
+    };
+
+    unless ($app->{_devserver}) {
+        # Production CGI — real STDOUT, execute now
+        my $http     = HTTP::Tiny->new(timeout => 120);
+        my $response = $http->request($method, $upstream, \%req);
+        $app->_proxy_response($response);
+        return;
+    }
+
+    # DevServer mode — defer execution
+    $app->{_sent_headers} = 1;
+    $app->{_sent_body}    = 1;
+}
+
+sub _raw_body {
+    my $app = shift;
+    return $app->{_raw_body} if exists $app->{_raw_body};
+
+    my $raw = $app->cgi->param('POSTDATA')
+           || $app->cgi->param('PUTDATA')
+           || '';
+
+    if (!$raw && $ENV{CONTENT_LENGTH}) {
+        local $/;
+        $raw = <STDIN> || '';
+    }
+
+    $app->{_raw_body} = $raw;
+    return $raw;
+}
+
+sub _proxy_response {
+    my ($app, $response) = @_;
+    return if $app->{_sent_body};
+
+    my $status       = $response->{status};
+    my $content_type = $response->{headers}{'content-type'} || 'application/json';
+    my $body         = $response->{content} // '';
+
+    print $app->cgi->header(
+        -type   => $content_type,
+        -status => $status,
+    );
+    print $body;
+
+    $app->{_sent_headers} = 1;
+    $app->{_sent_body}    = 1;
 }
 
 1;

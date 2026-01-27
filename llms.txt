@@ -414,29 +414,135 @@ my $count = $app->query_value("SELECT COUNT(*) FROM todos WHERE user_id = ?", $u
 $app->query_do("UPDATE todos SET done = 1 WHERE id = ?", $id);
 ```
 
+## CLI (throwback)
+
+The `throwback` CLI scaffolds projects, initializes SQLite databases, and runs a local dev server.
+
+### Install
+
+```bash
+make install
+# or: make install PREFIX=/custom/path
+```
+
+### Create a New Project
+
+```bash
+throwback create myapp
+cd myapp
+throwback initdb
+throwback run
+# Open http://localhost:3000/ — login: demo / demo123
+```
+
+`throwback create` generates:
+
+```
+myapp/
+├── MyApp.pm              # API module
+├── api.cgi               # CGI entry point
+├── .htaccess             # Apache routing (for production)
+├── index.html            # Starter page with login
+├── js/crud-client.js     # JavaScript API client
+├── schema.sql            # MySQL schema (production)
+├── schema_sqlite.sql     # SQLite schema (local dev)
+├── crudapp.conf          # Dev server config
+├── .throwback            # Framework path marker
+└── .gitignore
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `throwback create <dir>` | Scaffold a new project (creates git repo) |
+| `throwback initdb` | Create SQLite DB from schema_sqlite.sql, add demo user |
+| `throwback run` | Start HTTP server on localhost:3000 |
+| `throwback deploy` | Print production deployment steps |
+
+### Adding Tables
+
+1. Add your table to both `schema.sql` (MySQL) and `schema_sqlite.sql` (SQLite)
+2. Expose in your API module: `sub posts { shift->crud('posts') }`
+3. Set access rules for users (via the _auth table's access_rules JSON)
+4. Re-run `throwback initdb` (or delete dev.db and re-run)
+
+### Configuration (crudapp.conf)
+
+```ini
+[database]
+type = sqlite
+path = ./dev.db
+
+[server]
+port = 3000
+static_dir = .
+```
+
+Environment variables override config file values:
+
+```bash
+CRUDAPP_DB_TYPE=sqlite CRUDAPP_DB_PATH=./dev.db CRUDAPP_PORT=8080
+```
+
+### Local Dev Dependencies
+
+- DBD::SQLite
+- HTTP::Daemon (usually pre-installed)
+
 ## Dependencies
 
 **Required (all standard or widely available):**
 - Perl 5.10+
 - CGI (core)
 - DBI
-- DBD::mysql
+- DBD::mysql (production) or DBD::SQLite (local dev)
 - JSON
 - Digest::SHA (core since 5.10)
 
+**For local development:**
+- DBD::SQLite
+- HTTP::Daemon
+
 ## File Structure
 
+### Framework (this repo)
+
 ```
-/your-app/
-├── CrudApp.pm          # Framework (copy from crudapp-standalone)
-├── MyApi.pm            # Your API module
-├── api.cgi             # CGI entry point
-├── .htaccess           # Apache routing
-├── index.html          # Vue.js frontend
-├── js/
-│   └── crud-client.js  # JavaScript API client
-├── schema.sql          # Database schema
-└── create_user.pl      # User creation script
+throwback/
+├── bin/throwback            # CLI tool
+├── CrudApp.pm               # Main framework
+├── CrudApp/
+│   ├── Config.pm            # Configuration loader
+│   ├── DB.pm                # Database adapter factory
+│   ├── DevServer.pm         # Local HTTP server module
+│   └── DB/
+│       ├── MySQL.pm         # MySQL adapter (production)
+│       └── SQLite.pm        # SQLite adapter (local dev)
+├── example/                 # Example todo app
+│   ├── MyApi.pm
+│   ├── api.cgi
+│   ├── .htaccess
+│   ├── index.html
+│   ├── js/crud-client.js
+│   └── schema.sql
+└── llms.txt                 # This documentation
+```
+
+### Generated project (from `throwback create`)
+
+```
+myapp/
+├── MyApp.pm             # API module
+├── api.cgi              # CGI entry point
+├── .htaccess            # Apache routing (production)
+├── index.html           # Starter frontend
+├── js/crud-client.js    # JavaScript API client
+├── schema.sql           # MySQL schema (production)
+├── schema_sqlite.sql    # SQLite schema (local dev)
+├── crudapp.conf         # Dev server config
+├── .throwback           # Path to framework
+└── .gitignore
 ```
 
 ## Common Patterns

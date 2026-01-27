@@ -1,0 +1,28 @@
+# CrudApp Configuration File
+#
+# Copy this file to crudapp.conf and customize for your environment.
+#
+# Configuration can also be set via environment variables:
+#   CRUDAPP_DB_TYPE, CRUDAPP_DB_PATH, CRUDAPP_PORT, etc.
+# Environment variables take precedence over config file settings.
+
+[database]
+# Database type: sqlite (for local dev) or mysql (for production)
+type = sqlite
+
+# SQLite settings (when type = sqlite)
+path = ./dev.db
+
+# MySQL settings (when type = mysql)
+# Uncomment and fill in for production:
+# type = mysql
+# name = your_database
+# user = your_username
+# pass = your_password
+# host = localhost
+
+[server]
+# Development server settings (used by dev/runner.pl)
+port = 3000
+host = 127.0.0.1
+static_dir = ./example

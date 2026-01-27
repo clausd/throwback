@@ -1,0 +1,668 @@
+#!/usr/bin/perl
+#
+# throwback - CrudApp project scaffolding and dev server CLI
+#
+# Install:
+#   ln -s /path/to/throwback/bin/throwback /usr/local/bin/throwback
+#
+# Usage:
+#   throwback create <dir>   - Scaffold a new CrudApp project
+#   throwback initdb         - Initialize SQLite database (run from project dir)
+#   throwback run            - Start development server (run from project dir)
+#   throwback deploy         - Print deployment guidance
+#
+
+use strict;
+use warnings;
+use File::Basename;
+use File::Spec;
+use File::Copy;
+use Cwd qw(abs_path getcwd);
+
+# Resolve symlinks to find the real framework directory
+my $script_path = abs_path(__FILE__);
+my $bin_dir     = dirname($script_path);
+my $framework   = dirname($bin_dir);
+
+my $cmd = shift @ARGV || '';
+
+if ($cmd eq 'create')    { cmd_create(@ARGV) }
+elsif ($cmd eq 'initdb') { cmd_initdb(@ARGV) }
+elsif ($cmd eq 'run')    { cmd_run(@ARGV) }
+elsif ($cmd eq 'deploy') { cmd_deploy(@ARGV) }
+else                     { cmd_help() }
+
+exit 0;
+
+###############################################################################
+# help
+###############################################################################
+
+sub cmd_help {
+    print <<'USAGE';
+throwback - CrudApp project scaffolding and dev server
+
+Usage:
+  throwback create <dir>   Scaffold a new CrudApp project
+  throwback initdb         Initialize SQLite dev database (run from project dir)
+  throwback run            Start development server (run from project dir)
+  throwback deploy         Print deployment guidance
+
+Install:
+  make install
+
+USAGE
+}
+
+###############################################################################
+# create <dir>
+###############################################################################
+
+sub cmd_create {
+    my ($dir) = @_;
+    unless ($dir) {
+        die "Usage: throwback create <directory>\n";
+    }
+
+    if (-e $dir) {
+        die "Error: '$dir' already exists.\n";
+    }
+
+    # Derive package name from directory: my-app -> MyApp, blog -> Blog
+    my $pkg = _dir_to_package($dir);
+
+    print "Creating CrudApp project: $dir (package: $pkg)\n\n";
+
+    # Create directories
+    mkdir $dir or die "Cannot create directory '$dir': $!\n";
+    mkdir "$dir/js" or die "Cannot create directory '$dir/js': $!\n";
+
+    # Write .throwback marker (absolute path to framework)
+    _write_file("$dir/.throwback", "$framework\n");
+
+    # Write .gitignore
+    _write_file("$dir/.gitignore", <<'END');
+dev.db
+*.swp
+*.swo
+*~
+.DS_Store
+END
+
+    # Write crudapp.conf
+    _write_file("$dir/crudapp.conf", <<'END');
+[database]
+type = sqlite
+path = ./dev.db
+
+[server]
+port = 3000
+static_dir = .
+END
+
+    # Write API module
+    _write_file("$dir/$pkg.pm", <<"END");
+package $pkg;
+use strict;
+use warnings;
+use base 'CrudApp';
+
+sub configure {
+    my \$app = shift;
+    # Production MySQL credentials (ignored in local dev)
+    \$app->set_db('your_database', 'your_user', 'your_password');
+}
+
+# Expose tables:
+# sub posts { shift->crud('posts') }
+
+1;
+END
+
+    # Write api.cgi
+    _write_file("$dir/api.cgi", <<"END");
+#!/usr/bin/perl
+use strict;
+use warnings;
+use lib '.', '..';
+use $pkg;
+$pkg->new->run;
+END
+    chmod 0755, "$dir/api.cgi";
+
+    # Copy .htaccess from example
+    my $htaccess_src = "$framework/example/.htaccess";
+    if (-f $htaccess_src) {
+        copy($htaccess_src, "$dir/.htaccess")
+            or warn "Warning: Could not copy .htaccess: $!\n";
+    } else {
+        _write_htaccess("$dir/.htaccess");
+    }
+
+    # Copy crud-client.js
+    my $client_src = "$framework/example/js/crud-client.js";
+    if (-f $client_src) {
+        copy($client_src, "$dir/js/crud-client.js")
+            or warn "Warning: Could not copy crud-client.js: $!\n";
+    }
+
+    # Write MySQL schema
+    _write_file("$dir/schema.sql", <<'END');
+-- CrudApp MySQL Schema
+-- Run: mysql -u user -p mydb < schema.sql
+
+-- ============================================
+-- Authentication Tables (required by CrudApp)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS _auth (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    password_salt VARCHAR(32) NOT NULL,
+    password_hash VARCHAR(64) NOT NULL,
+    access_rules TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS _sessions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(64) UNIQUE NOT NULL,
+    user_id INT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE,
+    INDEX idx_token (token),
+    INDEX idx_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================
+-- Your application tables go below
+-- ============================================
+
+-- CREATE TABLE IF NOT EXISTS posts (
+--     id INT AUTO_INCREMENT PRIMARY KEY,
+--     user_id INT NOT NULL,
+--     title VARCHAR(255) NOT NULL,
+--     body TEXT,
+--     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+--     FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE,
+--     INDEX idx_user (user_id)
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+END
+
+    # Write SQLite schema
+    _write_file("$dir/schema_sqlite.sql", <<'END');
+-- CrudApp SQLite Schema (local development)
+-- Used by: throwback initdb
+
+-- ============================================
+-- Authentication Tables (required by CrudApp)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS _auth (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_salt TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    access_rules TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER IF NOT EXISTS _auth_updated_at
+AFTER UPDATE ON _auth
+BEGIN
+    UPDATE _auth SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+CREATE TABLE IF NOT EXISTS _sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT UNIQUE NOT NULL,
+    user_id INTEGER NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON _sessions(token);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON _sessions(expires_at);
+
+-- ============================================
+-- Your application tables go below
+-- ============================================
+
+-- CREATE TABLE IF NOT EXISTS posts (
+--     id INTEGER PRIMARY KEY AUTOINCREMENT,
+--     user_id INTEGER NOT NULL,
+--     title TEXT NOT NULL,
+--     body TEXT,
+--     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+--     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+--     FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE
+-- );
+--
+-- CREATE TRIGGER IF NOT EXISTS posts_updated_at
+-- AFTER UPDATE ON posts
+-- BEGIN
+--     UPDATE posts SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+-- END;
+--
+-- CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
+END
+
+    # Write starter index.html
+    _write_file("$dir/index.html", <<"END");
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$pkg</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { margin: 0 0 20px; color: #333; }
+        input, button {
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        input { width: 100%; margin-bottom: 10px; }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover { background: #45a049; }
+        .error { color: #e74c3c; margin: 10px 0; }
+        .info { color: #666; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="card" id="login-card">
+            <h1>$pkg</h1>
+            <form id="login-form">
+                <input id="username" placeholder="Username" required>
+                <input id="password" type="password" placeholder="Password" required>
+                <button type="submit">Login</button>
+            </form>
+            <p class="error" id="login-error" style="display:none"></p>
+        </div>
+
+        <div class="card" id="main-card" style="display:none">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h1>$pkg</h1>
+                <button id="logout-btn" style="background:#666">Logout</button>
+            </div>
+            <p class="info">Logged in. Edit this page and add your app tables to schema_sqlite.sql.</p>
+        </div>
+    </div>
+
+    <script src="js/crud-client.js"></script>
+    <script>
+        const api = new CrudClient('.');
+
+        document.getElementById('login-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            var errEl = document.getElementById('login-error');
+            errEl.style.display = 'none';
+            try {
+                await api.login(
+                    document.getElementById('username').value,
+                    document.getElementById('password').value
+                );
+                document.getElementById('login-card').style.display = 'none';
+                document.getElementById('main-card').style.display = 'block';
+            } catch(err) {
+                errEl.textContent = err.error || 'Login failed';
+                errEl.style.display = 'block';
+            }
+        });
+
+        document.getElementById('logout-btn').addEventListener('click', function() {
+            api.logout();
+            document.getElementById('login-card').style.display = 'block';
+            document.getElementById('main-card').style.display = 'none';
+        });
+
+        // Auto-restore session
+        if (localStorage.getItem('crud_token')) {
+            api.setToken(localStorage.getItem('crud_token'));
+            document.getElementById('login-card').style.display = 'none';
+            document.getElementById('main-card').style.display = 'block';
+        }
+    </script>
+</body>
+</html>
+END
+
+    # Git init
+    my $cwd = getcwd();
+    chdir $dir or die "Cannot chdir to $dir: $!\n";
+    system('git', 'init', '--quiet') == 0 or warn "Warning: git init failed\n";
+    system('git', 'add', '-A') == 0 or warn "Warning: git add failed\n";
+    system('git', 'commit', '-m', 'Initial scaffold from throwback', '--quiet') == 0
+        or warn "Warning: git commit failed\n";
+    chdir $cwd;
+
+    print "\nDone! Next steps:\n";
+    print "  cd $dir\n";
+    print "  throwback initdb\n";
+    print "  throwback run\n";
+    print "\n";
+}
+
+###############################################################################
+# initdb
+###############################################################################
+
+sub cmd_initdb {
+    my $fw = _find_framework();
+    unshift @INC, $fw;
+
+    require CrudApp::Config;
+
+    my $config = CrudApp::Config->load('crudapp.conf');
+    my $db_type = $config->{database}{type} || '';
+    unless ($db_type eq 'sqlite') {
+        die "Error: initdb only works with SQLite.\n"
+          . "Set [database] type = sqlite in crudapp.conf\n";
+    }
+
+    my $db_path = $config->{database}{path}
+        or die "Error: No database path in crudapp.conf.\n";
+
+    my $schema_file = 'schema_sqlite.sql';
+    unless (-f $schema_file) {
+        die "Error: $schema_file not found in current directory.\n";
+    }
+
+    print "Initializing database: $db_path\n";
+
+    # Read schema
+    open my $fh, '<', $schema_file or die "Cannot read $schema_file: $!\n";
+    local $/;
+    my $schema = <$fh>;
+    close $fh;
+
+    # Connect
+    require DBI;
+    my $dbh = do {
+        no warnings 'once';
+        DBI->connect(
+            "dbi:SQLite:dbname=$db_path", '', '',
+            { RaiseError => 1, PrintError => 0, sqlite_unicode => 1 }
+        ) or die "Cannot connect to SQLite: $DBI::errstr\n";
+    };
+
+    $dbh->do("PRAGMA foreign_keys = ON");
+
+    # Execute schema (handle triggers with embedded semicolons)
+    my @statements;
+    my $current = '';
+    my $in_trigger = 0;
+    for my $line (split /\n/, $schema) {
+        next if $line =~ /^\s*--/ && !$in_trigger;
+        $in_trigger = 1 if $line =~ /CREATE\s+TRIGGER/i;
+        $current .= "$line\n";
+        if ($line =~ /;\s*$/) {
+            if ($in_trigger && $line =~ /END\s*;\s*$/i) {
+                push @statements, $current;
+                $current = '';
+                $in_trigger = 0;
+            } elsif (!$in_trigger) {
+                push @statements, $current;
+                $current = '';
+            }
+        }
+    }
+    push @statements, $current if $current =~ /\S/;
+
+    my $executed = 0;
+    for my $stmt (@statements) {
+        $stmt =~ s/^\s+//; $stmt =~ s/\s+$//;
+        next unless $stmt;
+        next if $stmt =~ /^--/;
+        eval { $dbh->do($stmt) };
+        if ($@) {
+            warn "Warning: $@\n" unless $@ =~ /already exists/i;
+        } else {
+            $executed++;
+        }
+    }
+
+    print "Schema loaded ($executed statements).\n";
+
+    # Create demo user
+    my ($exists) = $dbh->selectrow_array(
+        "SELECT 1 FROM _auth WHERE username = ?", undef, 'demo'
+    );
+
+    if ($exists) {
+        print "Demo user already exists.\n";
+    } else {
+        require Digest::SHA;
+        my $salt = substr(Digest::SHA::sha256_hex(time() . $$ . rand()), 0, 32);
+        my $hash = Digest::SHA::sha256_hex($salt . 'demo123');
+
+        require JSON;
+        my $rules = JSON::encode_json({ tables => {} });
+
+        $dbh->do(
+            "INSERT INTO _auth (username, password_salt, password_hash, access_rules) VALUES (?, ?, ?, ?)",
+            undef, 'demo', $salt, $hash, $rules
+        );
+        print "Created demo user (demo / demo123).\n";
+    }
+
+    $dbh->disconnect;
+
+    print "\nReady! Run: throwback run\n";
+}
+
+###############################################################################
+# run
+###############################################################################
+
+sub cmd_run {
+    my $fw = _find_framework();
+    unshift @INC, $fw, '.';
+
+    require CrudApp::Config;
+    require CrudApp::DB;
+    require CrudApp::DevServer;
+
+    my $config = CrudApp::Config->load('crudapp.conf');
+
+    my $static_dir = $config->{server}{static_dir} || '.';
+    my $port       = $config->{server}{port}       || 3000;
+    my $host       = $config->{server}{host}       || '127.0.0.1';
+
+    # Override from command line
+    for my $i (0 .. $#ARGV) {
+        if ($ARGV[$i] eq '--port' && defined $ARGV[$i+1]) { $port = $ARGV[$i+1] }
+        if ($ARGV[$i] eq '--host' && defined $ARGV[$i+1]) { $host = $ARGV[$i+1] }
+    }
+
+    # Find API module: scan *.pm for 'use base' CrudApp
+    my $api_module;
+    opendir my $dh, '.' or die "Cannot read current directory: $!\n";
+    while (my $f = readdir $dh) {
+        next unless $f =~ /\.pm$/;
+        open my $fh, '<', $f or next;
+        while (<$fh>) {
+            if (/use\s+base\s+['"]CrudApp['"]/ || /use\s+parent\s+['"]CrudApp['"]/) {
+                ($api_module = $f) =~ s/\.pm$//;
+                last;
+            }
+        }
+        close $fh;
+        last if $api_module;
+    }
+    closedir $dh;
+
+    unless ($api_module) {
+        die "Error: No CrudApp API module found.\n"
+          . "Looking for *.pm with 'use base \"CrudApp\"' in current directory.\n";
+    }
+
+    # Add static dir to @INC
+    push @INC, $static_dir if $static_dir ne '.' && -d $static_dir;
+
+    # Load the module
+    my $module_file = "./$api_module.pm";
+    if (-f $module_file) {
+        require $module_file;
+    } else {
+        eval "require $api_module" or die "Cannot load $api_module: $@\n";
+    }
+
+    # Create DB adapter
+    my $db_adapter;
+    if ($config->{database} && $config->{database}{type}) {
+        $db_adapter = CrudApp::DB->new($config->{database});
+    }
+
+    CrudApp::DevServer::start({
+        host        => $host,
+        port        => $port,
+        static_dir  => $static_dir,
+        api_module  => $api_module,
+        db_adapter  => $db_adapter,
+        config_file => 'crudapp.conf',
+        db_type     => $config->{database}{type} || 'sqlite',
+        db_path     => $config->{database}{path} || '',
+    });
+}
+
+###############################################################################
+# deploy
+###############################################################################
+
+sub cmd_deploy {
+    print <<'GUIDE';
+CrudApp Deployment Guide
+=========================
+
+1. Upload these files to your server:
+   - YourApp.pm          (API module)
+   - api.cgi             (CGI entry point)
+   - .htaccess           (Apache routing)
+   - schema.sql          (MySQL schema)
+   - index.html          (frontend)
+   - js/crud-client.js   (API client)
+
+   Do NOT upload: dev.db, crudapp.conf, schema_sqlite.sql, .throwback
+
+2. Set up MySQL:
+   mysql -u user -p yourdb < schema.sql
+
+3. Edit YourApp.pm - update configure():
+   sub configure {
+       my $app = shift;
+       $app->set_db('yourdb', 'user', 'password');
+   }
+
+4. Ensure api.cgi is executable:
+   chmod 755 api.cgi
+
+5. Create a user:
+   perl -I. -MCrudApp -e '
+       use DBI;
+       use Digest::SHA qw(sha256_hex);
+       my $salt = substr(sha256_hex(rand()), 0, 32);
+       my $hash = sha256_hex($salt . "yourpassword");
+       my $dbh = DBI->connect("dbi:mysql:yourdb", "user", "pass");
+       $dbh->do("INSERT INTO _auth (username, password_salt, password_hash, access_rules) VALUES (?, ?, ?, ?)",
+           undef, "admin", $salt, $hash, "{}");
+   '
+
+6. Verify .htaccess RewriteBase matches your URL path:
+   App at https://example.com/app/  ->  RewriteBase /app/
+   App at https://example.com/      ->  RewriteBase /
+
+GUIDE
+}
+
+###############################################################################
+# Helpers
+###############################################################################
+
+sub _find_framework {
+    my $marker = '.throwback';
+    unless (-f $marker) {
+        die "Error: Not a throwback project (no .throwback file).\n"
+          . "Run this command from your project directory.\n";
+    }
+    open my $fh, '<', $marker or die "Cannot read $marker: $!\n";
+    chomp(my $path = <$fh>);
+    close $fh;
+    unless (-d $path && -f "$path/CrudApp.pm") {
+        die "Error: Framework not found at '$path'.\n"
+          . "Update .throwback with the correct path to the throwback repo.\n";
+    }
+    return $path;
+}
+
+sub _dir_to_package {
+    my ($dir) = @_;
+    # my-app -> MyApp, blog -> Blog, cool_thing -> CoolThing
+    my $name = (File::Spec->splitdir($dir))[-1];
+    $name =~ s/[^a-zA-Z0-9]+/ /g;
+    $name = join '', map { ucfirst lc $_ } split /\s+/, $name;
+    $name = 'MyApp' unless $name =~ /^[A-Z]/;
+    return $name;
+}
+
+sub _write_file {
+    my ($path, $content) = @_;
+    open my $fh, '>', $path or die "Cannot write $path: $!\n";
+    print $fh $content;
+    close $fh;
+}
+
+sub _write_htaccess {
+    my ($path) = @_;
+    _write_file($path, <<'END');
+RewriteEngine On
+
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+RewriteBase /
+
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+RewriteRule ^(.*)$ api.cgi/$1 [L,QSA]
+
+<FilesMatch "\.(pm|pl|json)$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "\.cgi$">
+    Require all granted
+</FilesMatch>
+
+AddDefaultCharset UTF-8
+END
+}
