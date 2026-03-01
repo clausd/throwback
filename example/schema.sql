@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS _auth (
     password_salt VARCHAR(32) NOT NULL,
     password_hash VARCHAR(64) NOT NULL,
     access_rules TEXT,
+    email VARCHAR(255),
+    email_verified TINYINT(1) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -40,6 +42,31 @@ CREATE TABLE IF NOT EXISTS todos (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE,
     INDEX idx_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================
+-- Login rate limiting
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS _login_attempts (
+    username VARCHAR(255) PRIMARY KEY,
+    failed_count INT NOT NULL DEFAULT 0,
+    locked_until INT  -- Unix timestamp; NULL or past means not locked
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================
+-- Email verification tokens
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS _email_verifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    token VARCHAR(64) UNIQUE NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE,
+    INDEX idx_email_verif_token (token),
+    INDEX idx_email_verif_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================

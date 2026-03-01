@@ -46,9 +46,20 @@ sub _load_from_env {
     $config->{database}{host} = $ENV{CRUDAPP_DB_HOST} if $ENV{CRUDAPP_DB_HOST};
 
     # Server settings
-    $config->{server}{port} = $ENV{CRUDAPP_PORT} if $ENV{CRUDAPP_PORT};
-    $config->{server}{host} = $ENV{CRUDAPP_HOST} if $ENV{CRUDAPP_HOST};
+    $config->{server}{port}       = $ENV{CRUDAPP_PORT}       if $ENV{CRUDAPP_PORT};
+    $config->{server}{host}       = $ENV{CRUDAPP_HOST}       if $ENV{CRUDAPP_HOST};
     $config->{server}{static_dir} = $ENV{CRUDAPP_STATIC_DIR} if $ENV{CRUDAPP_STATIC_DIR};
+    $config->{server}{app_url}    = $ENV{CRUDAPP_APP_URL}    if $ENV{CRUDAPP_APP_URL};
+
+    # SMTP settings
+    $config->{smtp}{host}      = $ENV{CRUDAPP_SMTP_HOST}      if $ENV{CRUDAPP_SMTP_HOST};
+    $config->{smtp}{port}      = $ENV{CRUDAPP_SMTP_PORT}      if $ENV{CRUDAPP_SMTP_PORT};
+    $config->{smtp}{user}      = $ENV{CRUDAPP_SMTP_USER}      if $ENV{CRUDAPP_SMTP_USER};
+    $config->{smtp}{pass}      = $ENV{CRUDAPP_SMTP_PASS}      if $ENV{CRUDAPP_SMTP_PASS};
+    $config->{smtp}{from}      = $ENV{CRUDAPP_SMTP_FROM}      if $ENV{CRUDAPP_SMTP_FROM};
+    $config->{smtp}{from_name} = $ENV{CRUDAPP_SMTP_FROM_NAME} if $ENV{CRUDAPP_SMTP_FROM_NAME};
+    $config->{smtp}{ssl}       = $ENV{CRUDAPP_SMTP_SSL}       if $ENV{CRUDAPP_SMTP_SSL};
+    $config->{smtp}{starttls}  = $ENV{CRUDAPP_SMTP_STARTTLS}  if $ENV{CRUDAPP_SMTP_STARTTLS};
 
     return $config;
 }

@@ -1,0 +1,15 @@
+Subject: Please verify your email for {{app_name}}
+
+Hi {{username}},
+
+Thanks for signing up for {{app_name}}! Please confirm your email address
+by clicking the link below:
+
+  {{verify_url}}
+
+This link expires in 24 hours.
+
+If you did not create an account you can safely ignore this email.
+
+--
+{{app_name}}

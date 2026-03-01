@@ -196,6 +196,12 @@ sub _handle_api {
 
             CGI::initialize_globals();
             $app->{_cgi} = CGI->new;
+
+            # Run configure() so subclasses can set up SMTP, app_url, etc.
+            # configure() should guard against re-initialising the DB when
+            # _db_adapter was already set by the DevServer above.
+            $app->configure;
+
             $app->_dispatch;
         };
     }

@@ -39,7 +39,36 @@
         button:disabled { background: #ccc; cursor: not-allowed; }
         button.secondary { background: #666; }
         button.danger { background: #e74c3c; }
-        .error { color: #e74c3c; margin: 10px 0; }
+        button.link {
+            background: none;
+            color: #4CAF50;
+            padding: 0;
+            font-size: 14px;
+            text-decoration: underline;
+            cursor: pointer;
+            border: none;
+        }
+        button.link:hover { color: #45a049; }
+        .error   { color: #e74c3c; margin: 10px 0; font-size: 14px; }
+        .success { color: #4CAF50; margin: 10px 0; font-size: 14px; }
+        .info    { color: #2196F3; margin: 10px 0; font-size: 14px; }
+
+        /* Auth tabs */
+        .tabs { display: flex; margin-bottom: 20px; border-bottom: 2px solid #eee; }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            color: #666;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+        }
+        .tab.active { color: #4CAF50; border-bottom-color: #4CAF50; }
+        .tab:hover:not(.active) { color: #333; }
+
+        /* Todo list */
         .todo-list { list-style: none; padding: 0; }
         .todo-item {
             display: flex;
@@ -62,28 +91,81 @@
             color: #e74c3c;
             cursor: pointer;
             padding: 5px 10px;
+            font-size: 18px;
         }
         .add-form { display: flex; gap: 10px; }
         .add-form input { flex: 1; margin: 0; }
-        .hidden { display: none; }
+
+        /* Verification banner */
+        .verify-banner {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            color: #856404;
+            font-size: 14px;
+        }
+        .verify-banner.success {
+            background: #d4edda;
+            border-color: #4CAF50;
+            color: #155724;
+        }
+        .verify-banner.error {
+            background: #f8d7da;
+            border-color: #e74c3c;
+            color: #721c24;
+        }
     </style>
 </head>
 <body>
     <div id="app">
-        <!-- Login Form -->
-        <div class="card" v-if="!token">
-            <h1>Login</h1>
-            <form @submit.prevent="login">
-                <input v-model="username" placeholder="Username" required>
-                <input v-model="password" type="password" placeholder="Password" required>
-                <button type="submit" :disabled="loading">
-                    {{ loading ? 'Logging in...' : 'Login' }}
-                </button>
-            </form>
-            <p class="error" v-if="error">{{ error }}</p>
+
+        <!-- Email verification result banner (shown after clicking email link) -->
+        <div v-if="verifyStatus" :class="['verify-banner', verifyStatus]">
+            <strong v-if="verifyStatus === 'success'">Email verified!</strong>
+            <strong v-else>Verification failed</strong>
+            — {{ verifyMessage }}
         </div>
 
-        <!-- Todo App -->
+        <!-- Login / Register -->
+        <div class="card" v-if="!token">
+            <h1>Todo App</h1>
+
+            <div class="tabs">
+                <button class="tab" :class="{ active: authTab === 'login' }"
+                        @click="authTab = 'login'; error = ''; success = ''">Login</button>
+                <button class="tab" :class="{ active: authTab === 'register' }"
+                        @click="authTab = 'register'; error = ''; success = ''">Sign Up</button>
+            </div>
+
+            <!-- Login form -->
+            <form v-if="authTab === 'login'" @submit.prevent="login">
+                <input v-model="username" placeholder="Username" autocomplete="username" required>
+                <input v-model="password" type="password" placeholder="Password"
+                       autocomplete="current-password" required>
+                <button type="submit" :disabled="loading">
+                    {{ loading ? 'Logging in…' : 'Log In' }}
+                </button>
+            </form>
+
+            <!-- Register form -->
+            <form v-if="authTab === 'register'" @submit.prevent="register">
+                <input v-model="regUsername" placeholder="Username" autocomplete="username" required>
+                <input v-model="regEmail"    type="email" placeholder="Email address"
+                       autocomplete="email" required>
+                <input v-model="regPassword" type="password" placeholder="Password (min 8 chars)"
+                       autocomplete="new-password" required minlength="8">
+                <button type="submit" :disabled="loading">
+                    {{ loading ? 'Creating account…' : 'Create Account' }}
+                </button>
+            </form>
+
+            <p class="error"   v-if="error">{{ error }}</p>
+            <p class="success" v-if="success">{{ success }}</p>
+        </div>
+
+        <!-- Todo App (authenticated) -->
         <div v-else>
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -123,53 +205,113 @@
 
         createApp({
             setup() {
-                // State
-                const token = ref(localStorage.getItem('crud_token') || '');
-                const username = ref('');
-                const password = ref('');
-                const todos = ref([]);
-                const newTitle = ref('');
-                const loading = ref(false);
-                const error = ref('');
+                const token     = ref(localStorage.getItem('crud_token') || '');
+                const authTab   = ref('login');
 
-                // API client - adjust URL if needed
+                // Login form
+                const username  = ref('');
+                const password  = ref('');
+
+                // Register form
+                const regUsername = ref('');
+                const regEmail    = ref('');
+                const regPassword = ref('');
+
+                // Todos
+                const todos     = ref([]);
+                const newTitle  = ref('');
+
+                // UI state
+                const loading   = ref(false);
+                const error     = ref('');
+                const success   = ref('');
+
+                // Email verification banner
+                const verifyStatus  = ref('');
+                const verifyMessage = ref('');
+
                 const api = new CrudClient('.');
 
-                // Restore token on load
                 if (token.value) {
                     api.setToken(token.value);
                 }
 
-                // Methods
+                // --- Email verification on page load ---
+                async function checkVerifyParam() {
+                    const params = new URLSearchParams(window.location.search);
+                    const t = params.get('verify');
+                    if (!t) return;
+
+                    // Clean the URL so the token isn't visible after reload
+                    history.replaceState(null, '', window.location.pathname);
+
+                    try {
+                        const res = await api.request('GET', 'verify_email/' + t);
+                        verifyStatus.value  = 'success';
+                        verifyMessage.value = res.message || 'Email verified. You can now log in.';
+                    } catch (e) {
+                        verifyStatus.value  = 'error';
+                        verifyMessage.value = e.error || 'Invalid or expired verification link.';
+                    }
+                }
+
+                // --- Auth ---
+                function errMsg(e, fallback) {
+                    return (e.response && e.response.error) || e.message || fallback;
+                }
+
                 async function login() {
                     loading.value = true;
-                    error.value = '';
+                    error.value   = '';
+                    success.value = '';
                     try {
                         const result = await api.login(username.value, password.value);
                         token.value = result.token;
                         await loadTodos();
                     } catch (e) {
-                        error.value = e.error || 'Login failed';
+                        error.value = errMsg(e, 'Login failed');
+                    }
+                    loading.value = false;
+                }
+
+                async function register() {
+                    loading.value = true;
+                    error.value   = '';
+                    success.value = '';
+                    try {
+                        await api.request('POST', 'register', {
+                            username: regUsername.value,
+                            email:    regEmail.value,
+                            password: regPassword.value,
+                        });
+                        regUsername.value = '';
+                        regEmail.value    = '';
+                        regPassword.value = '';
+                        authTab.value     = 'login';
+                        success.value = 'Account created! Check your email to verify, then log in.';
+                    } catch (e) {
+                        error.value = errMsg(e, 'Registration failed');
                     }
                     loading.value = false;
                 }
 
                 function logout() {
                     api.logout();
-                    token.value = '';
-                    todos.value = [];
+                    token.value    = '';
+                    todos.value    = [];
                     username.value = '';
                     password.value = '';
                 }
 
+                // --- Todos ---
                 async function loadTodos() {
                     loading.value = true;
-                    error.value = '';
+                    error.value   = '';
                     try {
                         const result = await api.table('todos').list();
                         todos.value = result.data || [];
                     } catch (e) {
-                        error.value = e.error || 'Failed to load todos';
+                        error.value = errMsg(e, 'Failed to load todos');
                     }
                     loading.value = false;
                 }
@@ -177,7 +319,7 @@
                 async function addTodo() {
                     if (!newTitle.value.trim()) return;
                     loading.value = true;
-                    error.value = '';
+                    error.value   = '';
                     try {
                         const todo = await api.table('todos').create({
                             title: newTitle.value.trim()
@@ -185,7 +327,7 @@
                         todos.value.push(todo);
                         newTitle.value = '';
                     } catch (e) {
-                        error.value = e.error || 'Failed to add todo';
+                        error.value = errMsg(e, 'Failed to add todo');
                     }
                     loading.value = false;
                 }
@@ -198,7 +340,7 @@
                         const idx = todos.value.findIndex(t => t.id === todo.id);
                         if (idx >= 0) todos.value[idx] = updated;
                     } catch (e) {
-                        error.value = e.error || 'Failed to update todo';
+                        error.value = errMsg(e, 'Failed to update todo');
                     }
                 }
 
@@ -207,20 +349,24 @@
                         await api.table('todos').delete(todo.id);
                         todos.value = todos.value.filter(t => t.id !== todo.id);
                     } catch (e) {
-                        error.value = e.error || 'Failed to delete todo';
+                        error.value = errMsg(e, 'Failed to delete todo');
                     }
                 }
 
-                // Load todos on mount if logged in
-                onMounted(() => {
+                onMounted(async () => {
+                    await checkVerifyParam();
                     if (token.value) {
                         loadTodos();
                     }
                 });
 
                 return {
-                    token, username, password, todos, newTitle, loading, error,
-                    login, logout, addTodo, toggleTodo, deleteTodo
+                    token, authTab,
+                    username, password,
+                    regUsername, regEmail, regPassword,
+                    todos, newTitle, loading, error, success,
+                    verifyStatus, verifyMessage,
+                    login, register, logout, addTodo, toggleTodo, deleteTodo,
                 };
             }
         }).mount('#app');

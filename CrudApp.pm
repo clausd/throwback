@@ -2,7 +2,7 @@ package CrudApp;
 use strict;
 use warnings;
 
-our $VERSION = '1.0.0';
+our $VERSION = '1.1.0';
 
 # Minimal dependencies - all standard or widely available
 use CGI;
@@ -241,14 +241,30 @@ sub login {
     return $app->render_error("Missing credentials", 400)
         unless $input && $input->{username} && $input->{password};
 
+    # Check rate limiting before touching password
+    my $rate_msg = $app->_check_login_rate_limit($input->{username});
+    if ($rate_msg) {
+        return $app->render_error($rate_msg, 429);
+    }
+
     # Fetch user
     my $user = $app->get_row('_auth', { username => $input->{username} });
-    return $app->render_error("Invalid credentials", 401) unless $user;
 
-    # Verify password
-    my $hash = sha256_hex($user->{password_salt} . $input->{password});
-    return $app->render_error("Invalid credentials", 401)
-        unless $hash eq $user->{password_hash};
+    # Verify password (always hash even if user not found to avoid timing attacks)
+    my $ok = $user && sha256_hex($user->{password_salt} . $input->{password}) eq $user->{password_hash};
+
+    unless ($ok) {
+        $app->_record_login_failure($input->{username});
+        return $app->render_error("Invalid credentials", 401);
+    }
+
+    # Clear failed attempts on success
+    $app->_clear_login_failures($input->{username});
+
+    # Check email verification if required
+    if ($app->require_email_verified && !$user->{email_verified}) {
+        return $app->render_error("Please verify your email before logging in", 403);
+    }
 
     # Create session
     my $token = $app->generate_token;
@@ -261,6 +277,71 @@ sub login {
     );
 
     $app->render_json({ token => $token, expires => $expires });
+}
+
+# Override to require email verification before login (default: off)
+sub require_email_verified { return 0 }
+
+sub _check_login_rate_limit {
+    my ($app, $username) = @_;
+    my $row = eval {
+        $app->dbh->selectrow_hashref(
+            "SELECT failed_count, locked_until FROM _login_attempts WHERE username = ?",
+            undef, $username
+        );
+    };
+    return undef if $@;  # Table may not exist in older setups
+    return undef unless $row && $row->{locked_until};
+    return undef if $row->{locked_until} <= time();
+
+    my $wait = $row->{locked_until} - time();
+    if ($wait >= 3600) {
+        my $hrs = int($wait / 3600);
+        return "Too many failed login attempts. Try again in $hrs hour(s).";
+    } elsif ($wait >= 60) {
+        my $mins = int($wait / 60);
+        return "Too many failed login attempts. Try again in $mins minute(s).";
+    }
+    return "Too many failed login attempts. Try again in ${wait}s.";
+}
+
+sub _record_login_failure {
+    my ($app, $username) = @_;
+    eval {
+        my ($current) = $app->dbh->selectrow_array(
+            "SELECT failed_count FROM _login_attempts WHERE username = ?",
+            undef, $username
+        );
+        my $count = ($current || 0) + 1;
+
+        # Penalty: 2^(count-1) seconds, capped at 86400 (24h)
+        my $penalty = 2 ** ($count - 1);
+        $penalty = 86400 if $penalty > 86400;
+        my $locked_until = time() + $penalty;
+
+        if (defined $current) {
+            $app->dbh->do(
+                "UPDATE _login_attempts SET failed_count = ?, locked_until = ? WHERE username = ?",
+                undef, $count, $locked_until, $username
+            );
+        } else {
+            $app->dbh->do(
+                "INSERT INTO _login_attempts (username, failed_count, locked_until) VALUES (?, ?, ?)",
+                undef, $username, $count, $locked_until
+            );
+        }
+    };
+    warn "Rate limit record error: $@" if $@;
+}
+
+sub _clear_login_failures {
+    my ($app, $username) = @_;
+    eval {
+        $app->dbh->do(
+            "DELETE FROM _login_attempts WHERE username = ?",
+            undef, $username
+        );
+    };
 }
 
 sub logout {
@@ -610,17 +691,91 @@ sub query_do {
 #############################################################################
 
 sub create_user {
-    my ($app, $username, $password, $access_rules) = @_;
+    my ($app, $username, $password, $access_rules, $email) = @_;
 
     my $salt = substr($app->generate_token, 0, 32);
     my $hash = sha256_hex($salt . $password);
 
     $app->dbh->do(
-        "INSERT INTO _auth (username, password_salt, password_hash, access_rules) VALUES (?, ?, ?, ?)",
-        undef, $username, $salt, $hash, encode_json($access_rules || {})
+        "INSERT INTO _auth (username, password_salt, password_hash, access_rules, email, email_verified)
+         VALUES (?, ?, ?, ?, ?, 0)",
+        undef, $username, $salt, $hash, encode_json($access_rules || {}), $email
     );
 
     return $app->dbh->last_insert_id(undef, undef, '_auth', undef);
+}
+
+#############################################################################
+# Email
+#############################################################################
+
+sub set_smtp {
+    my ($app, $config) = @_;
+    $app->{_smtp_config} = $config;
+    delete $app->{_email_instance};
+}
+
+sub email {
+    my $app = shift;
+    return $app->{_email_instance} if exists $app->{_email_instance};
+
+    my $cfg = $app->{_smtp_config};
+    return $app->{_email_instance} = undef unless $cfg && $cfg->{host};
+
+    require CrudApp::Email;
+    $app->{_email_instance} = CrudApp::Email->new($cfg);
+    return $app->{_email_instance};
+}
+
+#############################################################################
+# Email Verification
+#############################################################################
+
+# Generate a one-time verification token and store it for user_id.
+# Returns the token string.
+sub create_email_verification {
+    my ($app, $user_id) = @_;
+
+    my $token = $app->generate_token;
+    my $expires = time() + 86400;  # 24 hours
+
+    # Replace any existing token for this user
+    $app->dbh->do(
+        "DELETE FROM _email_verifications WHERE user_id = ?",
+        undef, $user_id
+    );
+
+    my $from_unixtime = $app->_sql_from_unixtime();
+    $app->dbh->do(
+        "INSERT INTO _email_verifications (user_id, token, expires_at) VALUES (?, ?, $from_unixtime)",
+        undef, $user_id, $token, $expires
+    );
+
+    return $token;
+}
+
+# Validate a verification token. On success: marks user verified, deletes token,
+# returns user_id. On failure: returns undef.
+sub consume_email_verification {
+    my ($app, $token) = @_;
+
+    my $now = $app->_sql_now();
+    my $row = $app->dbh->selectrow_hashref(
+        "SELECT user_id FROM _email_verifications WHERE token = ? AND expires_at > $now",
+        undef, $token
+    );
+    return undef unless $row;
+
+    $app->dbh->do(
+        "UPDATE _auth SET email_verified = 1 WHERE id = ?",
+        undef, $row->{user_id}
+    );
+    $app->dbh->do(
+        "DELETE FROM _email_verifications WHERE token = ?",
+        undef, $token
+    );
+
+    return $row->{user_id};
 }
 
 #############################################################################

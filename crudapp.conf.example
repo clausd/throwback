@@ -26,3 +26,26 @@ path = ./dev.db
 port = 3000
 host = 127.0.0.1
 static_dir = ./example
+# Base URL shown in emails (e.g. verification links)
+# app_url = https://example.com
+
+[smtp]
+# SMTP settings for outgoing email (used by CrudApp::Email)
+# Leave commented out to disable email sending.
+#
+# For STARTTLS (port 587, e.g. Gmail, SendGrid, Mailgun):
+# host      = smtp.example.com
+# port      = 587
+# user      = noreply@example.com
+# pass      = yourpassword
+# from      = noreply@example.com
+# from_name = My App
+# starttls  = 1
+#
+# For SMTPS / direct TLS (port 465):
+# ssl       = 1
+#
+# For a local relay with no auth (port 25):
+# host      = localhost
+# port      = 25
+# from      = noreply@localhost

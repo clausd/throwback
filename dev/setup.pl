@@ -169,6 +169,64 @@ for my $stmt (@statements) {
 
 print "Schema loaded successfully ($executed statements executed).\n\n";
 
+# ─── Migrations: add new columns to existing databases ───────────────────────
+print "Running schema migrations...\n";
+
+# _auth: add email and email_verified if missing
+{
+    my $cols = $dbh->selectall_arrayref("PRAGMA table_info(_auth)", { Slice => {} });
+    my %col = map { $_->{name} => 1 } @$cols;
+    unless ($col{email}) {
+        $dbh->do("ALTER TABLE _auth ADD COLUMN email TEXT");
+        print "  Added _auth.email\n";
+    }
+    unless ($col{email_verified}) {
+        $dbh->do("ALTER TABLE _auth ADD COLUMN email_verified INTEGER DEFAULT 0");
+        print "  Added _auth.email_verified\n";
+    }
+}
+
+# _login_attempts table
+{
+    my ($exists) = $dbh->selectrow_array(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_login_attempts'"
+    );
+    unless ($exists) {
+        $dbh->do(q{
+            CREATE TABLE _login_attempts (
+                username TEXT PRIMARY KEY,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER
+            )
+        });
+        print "  Created _login_attempts\n";
+    }
+}
+
+# _email_verifications table
+{
+    my ($exists) = $dbh->selectrow_array(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_email_verifications'"
+    );
+    unless ($exists) {
+        $dbh->do(q{
+            CREATE TABLE _email_verifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token TEXT UNIQUE NOT NULL,
+                expires_at DATETIME NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE
+            )
+        });
+        $dbh->do("CREATE INDEX idx_email_verif_token ON _email_verifications(token)");
+        $dbh->do("CREATE INDEX idx_email_verif_user  ON _email_verifications(user_id)");
+        print "  Created _email_verifications\n";
+    }
+}
+
+print "Migrations complete.\n\n";
+
 # Create demo user if requested
 if ($create_demo) {
     print "Creating demo user...\n";
@@ -210,14 +268,16 @@ if ($create_demo) {
         });
 
         $dbh->do(
-            "INSERT INTO _auth (username, password_salt, password_hash, access_rules) VALUES (?, ?, ?, ?)",
-            undef, 'demo', $salt, $hash, $access_rules
+            "INSERT INTO _auth (username, password_salt, password_hash, access_rules, email, email_verified)
+             VALUES (?, ?, ?, ?, ?, 1)",
+            undef, 'demo', $salt, $hash, $access_rules, 'demo@example.com'
         );
 
         my $user_id = $dbh->last_insert_id(undef, undef, undef, undef);
         print "Created demo user (id=$user_id)\n";
         print "  Username: demo\n";
         print "  Password: demo123\n";
+        print "  Email:    demo\@example.com (pre-verified)\n";
     }
 }
 

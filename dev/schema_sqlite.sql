@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS _auth (
     password_salt TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     access_rules TEXT,
+    email TEXT,
+    email_verified INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -57,6 +59,32 @@ BEGIN
 END;
 
 CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id);
+
+-- ============================================
+-- Login rate limiting
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS _login_attempts (
+    username TEXT PRIMARY KEY,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    locked_until INTEGER  -- Unix timestamp; NULL or past means not locked
+);
+
+-- ============================================
+-- Email verification tokens
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS _email_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_verif_token ON _email_verifications(token);
+CREATE INDEX IF NOT EXISTS idx_email_verif_user  ON _email_verifications(user_id);
 
 -- ============================================
 -- Cleanup: Remove expired sessions
