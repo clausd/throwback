@@ -12,12 +12,20 @@ from sqlalchemy import create_engine, text, Engine, Connection
 from config import AppConfig
 
 
-def make_engine(cfg: AppConfig) -> Engine:
+def make_engine(cfg: AppConfig, base_dir: Path | None = None) -> Engine:
+    """
+    Create a SQLAlchemy engine from AppConfig.
+
+    base_dir: directory used to resolve a relative database.path.
+      - Pass your project's BASE_DIR when importing from an external app.
+      - Defaults to the throwback repo root (correct for the reference main.py).
+      - Alternatively, set database.path to an absolute path in crudapp.conf
+        or via CRUDAPP_DB_PATH to bypass this entirely.
+    """
     db = cfg.database
     if db.type == "sqlite":
-        # Resolve path relative to repo root so it works regardless of CWD
-        base = Path(__file__).parent.parent
-        db_path = (base / db.path).resolve()
+        _base = base_dir if base_dir is not None else Path(__file__).parent.parent
+        db_path = (_base / db.path).resolve()
         engine = create_engine(
             f"sqlite:///{db_path}",
             connect_args={"check_same_thread": False},

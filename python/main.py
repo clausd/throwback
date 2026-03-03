@@ -50,7 +50,7 @@ EXAMPLE_DIR = BASE_DIR / "example"
 EMAIL_TEMPLATE_DIR = EXAMPLE_DIR / "email_templates"
 
 config = load_config()
-engine = make_engine(config)
+engine = make_engine(config, base_dir=BASE_DIR)
 get_db = get_db_dependency(engine)
 get_current_user = make_get_current_user(get_db)
 

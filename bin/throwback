@@ -96,7 +96,8 @@ type = sqlite
 path = ./dev.db
 
 [server]
-port = 3000
+port = 3000        # Perl backend (throwback run)
+; port = 3001      # Python backend (uv run uvicorn main:app --reload)
 static_dir = .
 END
 
@@ -168,6 +169,8 @@ CREATE TABLE IF NOT EXISTS _auth (
     password_salt VARCHAR(32) NOT NULL,
     password_hash VARCHAR(64) NOT NULL,
     access_rules TEXT,
+    email VARCHAR(255),
+    email_verified TINYINT(1) NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -181,6 +184,23 @@ CREATE TABLE IF NOT EXISTS _sessions (
     FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE,
     INDEX idx_token (token),
     INDEX idx_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS _login_attempts (
+    username VARCHAR(255) PRIMARY KEY,
+    failed_count INT NOT NULL DEFAULT 0,
+    locked_until BIGINT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS _email_verifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    token VARCHAR(64) UNIQUE NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE,
+    INDEX idx_token (token),
+    INDEX idx_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================
@@ -214,6 +234,8 @@ CREATE TABLE IF NOT EXISTS _auth (
     password_salt TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     access_rules TEXT,
+    email TEXT,
+    email_verified INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -235,6 +257,24 @@ CREATE TABLE IF NOT EXISTS _sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON _sessions(token);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON _sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS _login_attempts (
+    username TEXT PRIMARY KEY,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    locked_until INTEGER  -- Unix timestamp; NULL or past means not locked
+);
+
+CREATE TABLE IF NOT EXISTS _email_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES _auth(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_verif_token ON _email_verifications(token);
+CREATE INDEX IF NOT EXISTS idx_email_verif_user  ON _email_verifications(user_id);
 
 -- ============================================
 -- Your application tables go below
@@ -477,6 +517,8 @@ sub cmd_initdb {
             "INSERT INTO _auth (username, password_salt, password_hash, access_rules) VALUES (?, ?, ?, ?)",
             undef, 'demo', $salt, $hash, $rules
         );
+        # Set email and email_verified if the columns exist (new schema; safe to eval)
+        eval { $dbh->do("UPDATE _auth SET email = 'demo\@example.com', email_verified = 1 WHERE username = 'demo'") };
         print "Created demo user (demo / demo123).\n";
     }
 
