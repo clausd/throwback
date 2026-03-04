@@ -64,7 +64,7 @@ def make_get_current_user(get_db):
                 FROM   _auth u
                 JOIN   _sessions s ON s.user_id = u.id
                 WHERE  s.token = :token
-                  AND  s.expires_at > datetime('now')
+                  AND  s.expires_at > CURRENT_TIMESTAMP
             """),
             {"token": token},
         ).mappings().first()
